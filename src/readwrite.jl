@@ -5,7 +5,7 @@ using UnPack
 
 function Read(datapath)
     data = []
-    param_dic = h5read(datapath,"parameters")
+    param_dic = h5read("results/"*datapath*".h5","parameters")
     SO = param_dic["SO"]
     T = param_dic["Tend"]
     saveevery = param_dic["saveevery"]
