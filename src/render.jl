@@ -2,8 +2,6 @@ using Plots
 using ProgressBars
 using StrFormat
 using UnPack
-using PythonPlot
-pythonplot()
 
 function Render(p,data)
     @unpack savename,SO,saveevery = p
