@@ -5,7 +5,8 @@ using UnPack
 
 function Read(datapath)
     data = []
-    param_dic = h5read("results/"*datapath*".h5","parameters")
+    realpath = "results/"*datapath*".h5"
+    param_dic = h5read(realpath,"parameters")
     SO = param_dic["SO"]
     T = param_dic["Tend"]
     saveevery = param_dic["saveevery"]
@@ -14,7 +15,7 @@ function Read(datapath)
         phi = []
         for j = 1:SO
             label = f"/phi_\%d(j)/t_\%04d(i)"
-            phij = h5read(datapath,label)
+            phij = h5read(realpath,label)
             push!(phi,phij)
         end
         push!(data,phi)
