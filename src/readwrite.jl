@@ -20,7 +20,15 @@ function Read(datapath)
         end
         push!(data,phi)
     end
-    return param_dic,data
+    realdata = []
+    for i in ProgressBar(tind)
+        phi = zeros(Float64,N,N,SO)
+        for j = 1:SO
+            phi[:,:,j] = data[i][j][:,:]
+        end
+        push!(realdata,phi)
+    end
+    return param_dic,realdata
 end
 
 function Write(p,data)
