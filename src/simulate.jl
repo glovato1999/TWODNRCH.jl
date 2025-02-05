@@ -79,7 +79,7 @@ function stepC_ETDonfly!(c,cdash,grid,dt)
 end
 
 function grid2D(p)
-    @unpack N,L,SO = p
+    @unpack N,L,SO,dt = p
 
     kx = rfftfreq(N,N*(2*pi/L))
     ky = fftfreq(N,N*(2*pi/L))
