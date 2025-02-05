@@ -23,9 +23,9 @@ function Read(datapath)
 end
 
 function Write(p,data)
-    @unpack saveevery,Tend,SO = p
+    @unpack saveevery,Tend,SO,savename = p
     tind = [i for i=0:saveevery:Tend]
-    io = h5open("results/results.h5","w")
+    io = h5open("results/"*savename*".h5","w")
     for j = 1:SO
         group_label = f"phi_\%d(j)"
         println("writing ",group_label)
