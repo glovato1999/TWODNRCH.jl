@@ -4,6 +4,7 @@ using StrFormat
 using UnPack
 
 function Render(p,data)
+    pyplot()
     @unpack savename,SO,saveevery = p
     anim = @animate for t in ProgressBar(eachindex(data))
         mini = [minimum(last(data)[j]) for j=1:SO]

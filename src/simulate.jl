@@ -114,3 +114,18 @@ function grid2D_ETDonfly(p)
     return (; N,L,kx2,ky2,kcut2,pfor,pinv)
 end
 
+function ASMatrix(a,so)
+    A = zeros(Float64,(so,so))
+    signum = -1
+    strife = 1
+    for i=1:so
+        for j=i+1:so
+            A[i,j]=signum*a[strife]
+            A[j,i]=-signum*a[strife]
+            signum*=-1
+            strife+=1
+        end
+    end
+    return A
+end
+
