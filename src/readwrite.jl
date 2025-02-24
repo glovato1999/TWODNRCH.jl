@@ -7,21 +7,22 @@ function Read(datapath)
     data = []
     realpath = "results/"*datapath*".h5"
     param_dic = h5read(realpath,"parameters")
-    SO = param_dic["SO"]
+    SO = param_dic["SO"]::Int
     T = param_dic["Tend"]
+    N = param_dic["N"]
     saveevery = param_dic["saveevery"]
     tind = [i for i=0:saveevery:T]
-    for i in ProgressBar(tind)
+    for i in ProgressBar(eachindex(tind))
         phi = []
         for j = 1:SO
-            label = f"/phi_\%d(j)/t_\%04d(i)"
+            label = f"/phi_\%d(j)/t_\%04d(tind[i])"
             phij = h5read(realpath,label)
             push!(phi,phij)
         end
         push!(data,phi)
     end
     realdata = []
-    for i in ProgressBar(tind)
+    for i in ProgressBar(eachindex(tind))
         phi = zeros(Float64,N,N,SO)
         for j = 1:SO
             phi[:,:,j] = data[i][j][:,:]
