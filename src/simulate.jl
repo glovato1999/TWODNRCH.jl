@@ -2,143 +2,161 @@ using FFTW
 using LinearAlgebra
 using ProgressBars
 using UnPack
+using StrFormat
 
-function NRCH_2D!(phi0,p,grid,data)
-    @unpack N,SO,Tend,dt,A,saveevery = p
+function grid2D(p)
+    @unpack N,L,SO = p
 
-    c = Array{ComplexF64}(undef,grid.Nhalf,N,SO)
-    c = grid.pfor*phi0
-    cdash = similar(c)
-    cdashold = similar(c)
-    rho = similar(phi0)
-    tspan = (2*dt:dt:Tend)
+    Nhalf = div(N,2)+1
+
+    kx = rfftfreq(N,N*2*pi/L)
+    ky = fftfreq(N,N*2*pi/L)
+    kx2 = kx.^2
+    ky2 = ky.^2
+    kcut = 2/3*maximum(abs.(kx))
+    kcut2 = kcut^2
+
+    pfor = plan_rfft(Array{Float64}(undef,N,N,SO),(1,2),flags=FFTW.PATIENT)
+    pinv = plan_irfft(Array{ComplexF64}(undef,Nhalf,N,SO),N,(1,2),flags=FFTW.PATIENT)
+
+    return (; kx2,ky2,kcut2,pfor,pinv,Nhalf)
+end
+
+function NRCH_2D(phi0,parameters,ETD)
+    g = grid2D(parameters)
+    @unpack N,SO,dt,Tend,saveevery,A = parameters
+    @unpack Nhalf,kx2,ky2,kcut2,pfor,pinv = g
+
+    phik = zeros(ComplexF64,Nhalf,N,SO)
+    nonlin = zeros(Float64,N,N,SO)
+    nonlink = zeros(ComplexF64,Nhalf,N,SO)
+    phi = copy(phi0)
+
+    t = (dt:dt:Tend)
+
+    data = Array{Float64,3}[]
+    tpoints = Float64[]
     resize!(data,Int(div(Tend,saveevery))+1)
-    data[1] = copy(phi0)
-    # push!(data,copy(phi0))
+    resize!(tpoints,Int(div(Tend,saveevery))+1)
+    data[1] = copy(phi)
+    tpoints[1] = 0
     stride = 2
-    println(typeof(c))
-    println(typeof(cdash))
-    println(typeof(cdashold))
-    println(typeof(phi0))
-    println(typeof(rho))
-    println(typeof(data))
-    println(typeof(A))
 
+    mul!(phik,pfor,phi)
 
-    NRCH_2D_loop_ETD1!(phi0,rho,c,cdash,cdashold,A,SO,grid)
+    if (ETD == 1)
+        println("ETD_1")
+        @time begin
+            for ti in eachindex(t)
+                perc = ti/size(t)[1]*100
+                print(f"\%.1f(perc)% \%.1f(t[ti])/\%.1f(Tend)s\r")
 
-    for t in ProgressBar(tspan)
-        NRCH_2D_loop_ETD2!(phi0,rho,c,cdash,cdashold,A,SO,grid)
+                computeNonlin!(nonlin,phi,A,SO)
 
-        if t%saveevery==0
-            data[stride] = copy(phi0)
-            stride += 1
-            # push!(data,copy(phi0))
+                mul!(nonlink,pfor,nonlin)
+
+                step_ETD1!(phik,nonlink,kx2,ky2,kcut2,dt)
+
+                mul!(phi,pinv,nonlink)
+
+                if t[ti]%saveevery == 0
+                    data[stride] = copy(phi)
+                    tpoints[stride] = t[ti]
+                    stride += 1
+
+                end
+            end
+        end
+    elseif (ETD == 2)
+        println("ETD_2")
+        t = (2*dt:dt:Tend)
+        nonlink_old = zeros(ComplexF64,Nhalf,N,SO)
+        @time begin
+            computeNonlin!(nonlin,phi,A,SO)
+            mul!(nonlink,pfor,nonlin)
+            copyto!(nonlink_old,nonlink)
+            step_ETD1!(phik,nonlink,kx2,ky2,kcut2,dt)
+            mul!(phi,pinv,nonlink)
+
+            for ti in eachindex(t)
+                perc = ti/size(t)[1]*100
+                print(f"\%.1f(perc)% \%.1f(t[ti])/\%.1f(Tend)s\r")
+
+                computeNonlin!(nonlin,phi,A,SO)
+                mul!(nonlink,pfor,nonlin)
+
+                step_ETD2!(phik,nonlink,nonlink_old,kx2,ky2,kcut2,dt)
+
+                mul!(phi,pinv,nonlink)
+
+                if t[ti]%saveevery == 0
+                    data[stride] = copy(phi)
+                    tpoints[stride] = t[ti]
+                    stride += 1
+                end
+            end
         end
     end
+    return tpoints,data
 end
 
-function NRCH_2D_loop_ETD1!(phi0,rho,c,cdash,cdashold,A,SO,grid)
-    computeRho(phi0,rho,A,SO)
-
-    mul!(cdash,grid.pfor,rho)
-    cdashold = copy(cdash)
-
-    stepC_ETD1!(c,cdash,grid)
-
-    mul!(phi0,grid.pinv,cdash)
-end
-
-function NRCH_2D_loop_ETD2!(phi0,rho,c,cdash,cdashold,A,SO,grid)
-    computeRho(phi0,rho,A,SO)
-
-    mul!(cdash,grid.pfor,rho)
-
-    stepC_ETD2!(c,cdash,cdashold,grid)
-
-    mul!(phi0,grid.pinv,cdash)
-end
-
-function computeRho(phi,rho,A,SO)
-    @inbounds for I in CartesianIndices(rho)
+function computeNonlin!(nonlin,phi,A,SO)
+    for I in CartesianIndices(nonlin)
         i,j,k = Tuple(I)
-        rho[I] = -phi[I]
+        nonlin[I] = -phi[I]
         for l=1:SO
-            rho[I] += A[k,l]*phi[i,j,l]+phi[i,j,l]^2*phi[I]
+            nonlin[I] += phi[i,j,l]^2*phi[I]
+            nonlin[I] += A[k,l]*phi[i,j,l]
         end
     end
+    nothing
 end
 
-function stepC_ETD1!(c,cdash,grid)
-    @unpack kx2,ky2,kcut2,dt = grid
-    cprev = c[1,1,:]
-    @inbounds for I in CartesianIndices(c)
-        i, j = Tuple(I)
-        k2 = kx2[i]+ky2[j]
-        if ((kx2[i] < kcut2[1]) | (ky2[j] < kcut2[2]))
+function step_ETD1!(phik,nonlink,kx2,ky2,kcut2,dt)
+    for I in CartesianIndices(phik)
+        i,j,k = Tuple(I)
+        if (kx2[i] < kcut2) & (ky2[j] < kcut2)
+            k2 = kx2[i]+ky2[j]
             ca = -k2^2
             K1 = exp(ca*dt)
-            if abs(ca*dt)<=1.e-5
-                K2 = dt+0.5e0*ca*dt^2
+            if (abs(ca*dt) <= 1.e-5)
+                K2 = dt + 0.5e0 * ca * dt^2
             else
                 K2 = expm1(ca*dt)/ca
             end
-            c[I] = K1 * c[I] - k2 * K2 * cdash[I] 
+            phik[I] = K1*phik[I] - k2*K2*nonlink[I]
         else
-            c[I] = 0
+            phik[I] = 0
         end
-        cdash[I] = c[I]
+        nonlink[I] = phik[I]
     end
-    c[1,1,:] = cprev
-    cdash[1,1,:] = cprev
+    nothing
 end
 
-function stepC_ETD2!(c,cdash,cdashold,grid)
-    @unpack kx2,ky2,kcut2,dt = grid
-    cprev = c[1,1,:]
-    @inbounds for I in CartesianIndices(c)
-        i, j = Tuple(I)
-        k2 = kx2[i]+ky2[j]
-        if ((kx2[i] < kcut2[1]) | (ky2[j] < kcut2[2]))
-            ca = -k2^2
-            K1 = exp(ca*dt)
-            if abs(ca*dt)<=1.e-5
-                K2 = 1.5e0*dt+(2.e0/3.e0)*ca*dt^2
-                K3 = -0.5e0*dt-(1.e0/6.e0)*ca*dt^2
+function step_ETD2!(phik,nonlink,nonlink_old,kx2,ky2,kcut2,dt)
+    for I in CartesianIndices(phik)
+        i,j,k = Tuple(I)
+        if (kx2[i] < kcut2) & (ky2[j] < kcut2)
+            k2 = kx2[i]+ky2[j]
+            ca = -k2^2 
+            K1 = exp(dt*ca)
+            if (abs(dt*ca) <= 1.e-5)
+                K2 = 1.5e0 * dt + (2.e0 / 3.e0) * ca * dt^2
+                K3 = -0.5e0 * dt - (1.e0 / 6.e0) * ca * dt^2
             else
-                K2 = ((1+dt*ca)*expm1(dt*ca)-dt*ca)/(dt*ca^2)
-                K3 = (-expm1(dt*ca)+dt*ca)/(dt*ca^2)
+                K2 = ((1 + dt * ca) * expm1(dt * ca) - dt * ca) / (dt*ca^2)
+                K3 = (-expm1(dt * ca) + dt * ca) / (dt * ca^2)
             end
-            c[I] = K1 * c[I] - k2 * K2 * cdash[I] -k2*K3*cdashold[I]
+            phik[I] = K1 * phik[I] - k2 * K2 * nonlink[I] - k2 * K3 * nonlink_old[I]
         else
-            c[I] = 0
+            phik[I] = 0
         end
-        cdashold[I] = cdash[I]
-        cdash[I] = c[I]
+        nonlink_old[I] = nonlink[I]
+        nonlink[I] = phik[I]
     end
-    c[1,1,:] = cprev
-    cdash[1,1,:] = cprev
-end
-
-function grid2D(p)
-    @unpack N,L,SO,dt = p
-    Nhalf = div(N,2)+1
-
-    kx= rfftfreq(N,N*(2*pi/L))
-    ky = fftfreq(N,N*(2*pi/L))
-
-    kx2 = kx.^2
-    ky2 = ky.^2
-    kcut = (1/2*maximum(abs.(kx)),1/2*maximum(abs.(ky)))
-    kcut2 = kcut.^2
-    pfor = plan_rfft(Array{Float64}(undef,N,N,SO),(1,2);flags=FFTW.PATIENT)
-    pinv = plan_irfft(Array{ComplexF64}(undef,Nhalf,N,SO),N,(1,2);flags=FFTW.PATIENT)
-
-    return (; N,Nhalf,L,kx2,ky2,kcut2,pfor,pinv,dt)
 end
 
 function ASMatrix(a,so)
-    # Dont to zeros(Float64,(so,so)) for some reason
     A = zeros(Float64,so,so)
     signum = -1
     strife = 1
@@ -152,107 +170,3 @@ function ASMatrix(a,so)
     end
     return A
 end
-
-# Old stuff
-
-function stepC!(c,cdash,grid)
-    @unpack K1,K2,ksq,kcut = grid
-    @inbounds for I in CartesianIndices(c)
-        i, j = Tuple(I)
-        if ksq[i,j] < kcut
-            c[I] = K1[i,j] * c[I] + K2[i,j] * cdash[I] 
-        else
-            c[I] = 0
-        end
-        cdash[I] = c[I]
-    end
-end
-
-function stepC_ETDonfly!(c,cdash,grid)
-    @unpack kx2,ky2,kcut2,dt = grid
-    cprev = c[1,1,:]
-    @inbounds for I in CartesianIndices(c)
-        i, j = Tuple(I)
-        k2 = kx2[i]+ky2[j]
-        if ((kx2[i] < kcut2[1]) | (ky2[j] < kcut2[2]))
-            ca = -k2^2
-            K1 = exp(ca*dt)
-            if abs(ca*dt)<=1.e-5
-                K2 = dt+0.5e0*ca*dt^2
-            else
-                K2 = expm1(ca*dt)/ca
-            end
-            c[I] = K1 * c[I] - k2 * K2 * cdash[I] 
-        else
-            c[I] = 0
-        end
-        cdash[I] = c[I]
-    end
-    c[1,1,:] = cprev
-    cdash[1,1,:] = cprev
-end
-
-
-function grid2D_precomp(p)
-    @unpack N,L,SO,dt = p
-
-    kx = rfftfreq(N,N*(2*pi/L))
-    ky = fftfreq(N,N*(2*pi/L))
-    kcut = 2/3*maximum(abs.(kx))
-    pfor = plan_rfft(Array{Float64}(undef,N,N,SO),(1,2);flags=FFTW.PATIENT)
-    pinv = plan_irfft(Array{ComplexF64}(undef,div(N,2)+1,N,SO),N,(1,2);flags=FFTW.PATIENT)
-    K1 = zeros(div(N,2)+1,N)
-    K2 = similar(K1)
-    ksq = similar(K1)
-
-    for j in eachindex(ky)
-        for i in eachindex(kx)
-            ca = -(kx[i]^2+ky[j]^2)^2
-            ksq[i,j] = sqrt(kx[i]^2+ky[j]^2)
-            K1[i,j] = exp(ca*dt)
-            if abs(ca*dt)<=1.e-5
-                K2[i,j] = dt+0.5e0*ca*dt^2
-            else
-                K2[i,j] = expm1(ca*dt)/ca
-            end
-            K2[i,j] *= -(kx[i]^2+ky[j]^2)
-        end
-    end
-    K2[1,1] = 0
-    return (; N,L,kx,ky,ksq,kcut,K1,K2,pfor,pinv)
-end
-
-function grid2D_old(p)
-    @unpack N,L,SO,dt = p
-
-    kx = rfftfreq(N,N*(2*pi/L))
-    ky = fftfreq(N,N*(2*pi/L))
-    kcut = 2/3*maximum(abs.(kx))
-    pfor = plan_rfft(Array{Float64}(undef,N,N,SO),(1,2);flags=FFTW.PATIENT)
-    pinv = plan_irfft(Array{ComplexF64}(undef,div(N,2)+1,N,SO),N,(1,2);flags=FFTW.PATIENT)
-    K1 = zeros(div(N,2)+1,N)
-    K2 = similar(K1)
-    K3 = similar(K1)
-    ksq = similar(K1)
-
-    for j in eachindex(ky)
-        for i in eachindex(kx)
-            ca = -(kx[i]^2+ky[j]^2)^2
-            K1[i,j] = exp(ca*dt)
-            if abs(ca*dt)<=1.e-5
-                K2[i,j] = 1.5e0*dt+(2.e0/3.0e0)*ca*dt^2
-                K3[i,j] = -0.5e0*dt-(1.e0/6.e0)*ca*dt^2
-            else
-                K2[i,j] = ((1+dt*ca)*expm1(dt*ca)-dt*ca)/(dt*ca^2)
-                K3[i,j] = (-expm1(dt*ca)+dt*ca)/(dt*ca^2)
-            end
-            ksq[i,j] = sqrt(kx[i]^2+ky[j]^2)
-            K2[i,j] *= -(kx[i]^2+ky[j]^2)
-            K3[i,j] *= -(kx[i]^2+ky[j]^2)
-        end
-    end
-    K2[1,1] = 0
-    K3[1,1] = 0
-    return (; N,L,kx,ky,ksq,kcut,K1,K2,K3,pfor,pinv)
-end
-
